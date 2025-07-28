@@ -1,0 +1,10 @@
+menu "HELLO TEST Driver "
+comment "HELLO TEST Driver Config"
+ 
+config HELLO
+	tristate "hello module test"
+	default m
+	help
+	This is the hello test driver --by wxh.
+ 
+endmenu
