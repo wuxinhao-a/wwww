@@ -6,6 +6,8 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/version.h>
+#include <linux/sysfs.h>
+#include <linux/device.h>
 
 #define DRV_NAME "my_dt_driver"
 #define EXPECTED_IRQ 66
@@ -19,6 +21,66 @@ struct my_device_data {
     struct resource *mem_res;
     struct proc_dir_entry *proc_dir;
 };
+
+// 先声明 sysfs_status_show 函数
+static ssize_t sysfs_status_show(struct device *dev, 
+                                 struct device_attribute *attr, 
+                                 char *buf);
+
+// 定义 sysfs 属性
+static struct device_attribute dev_attr_status = 
+    __ATTR(status, 0444, sysfs_status_show, NULL);
+
+// 定义 sysfs 属性组
+static struct attribute *dev_attrs[] = {
+    &dev_attr_status.attr,
+    NULL
+};
+
+static const struct attribute_group dev_attr_group = {
+    .attrs = dev_attrs,
+};
+
+// SysFS 属性显示函数实现
+static ssize_t sysfs_status_show(struct device *dev, 
+                                 struct device_attribute *attr, 
+                                 char *buf)
+{
+    struct platform_device *pdev = to_platform_device(dev);
+    struct my_device_data *data = platform_get_drvdata(pdev);
+    ssize_t count = 0;
+    
+    if (!data) {
+        return snprintf(buf, PAGE_SIZE, "Error: No device data available\n");
+    }
+    
+    // 显示设备信息
+    count += snprintf(buf + count, PAGE_SIZE - count, 
+                     "Driver: %s\n", DRV_NAME);
+    count += snprintf(buf + count, PAGE_SIZE - count, 
+                     "Device: %s\n", dev_name(data->dev));
+    
+    // 显示寄存器信息
+    if (data->mem_res) {
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "\nMemory Resources:\n");
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "  Physical Address: 0x%08llx\n", 
+                         (unsigned long long)data->mem_res->start);
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "  Size: %lld bytes\n", resource_size(data->mem_res));
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "  Mapped Address: %pK\n", data->regs);
+    }
+    
+    // 显示中断信息
+    count += snprintf(buf + count, PAGE_SIZE - count, 
+                     "\nInterrupt:\n");
+    count += snprintf(buf + count, PAGE_SIZE - count, 
+                     "  IRQ: %d (Registration Disabled)\n", data->irq);
+    
+    return count;
+}
 
 static int proc_registers_show(struct seq_file *m, void *v)
 {
@@ -51,7 +113,6 @@ static int proc_registers_show(struct seq_file *m, void *v)
 
 static int proc_registers_open(struct inode *inode, struct file *file)
 {
-    // 对于 Linux 4.9.x，使用 PDE_DATA 宏
     return single_open(file, proc_registers_show, PDE_DATA(inode));
 }
 
@@ -132,27 +193,42 @@ static int my_probe(struct platform_device *pdev)
         return ret;
     }
     
+    /* 6. 创建 sysfs 接口 */
+    ret = sysfs_create_group(&dev->kobj, &dev_attr_group);
+    if (ret) {
+        dev_err(dev, "Failed to create sysfs group (%d)\n", ret);
+        if (data->proc_dir) {
+            proc_remove(data->proc_dir);
+        }
+        return ret;
+    }
+    
     platform_set_drvdata(pdev, data);
     dev_info(dev, "Driver initialized successfully (without IRQ)\n");
-    dev_info(dev, "Access device info via /proc/%s/%s\n",
-             PROC_DIR_NAME, PROC_FILE_NAME);
+    dev_info(dev, "Access device info via:\n");
+    dev_info(dev, "  /proc/%s/%s\n", PROC_DIR_NAME, PROC_FILE_NAME);
+    dev_info(dev, "  /sys/devices/platform/%s/status\n", dev_name(dev));
     
     return 0;
 }
 
 static int my_remove(struct platform_device *pdev)
 {
+    struct device *dev = &pdev->dev;
     struct my_device_data *data = platform_get_drvdata(pdev);
     
     if (data) {
         // 移除 proc 文件
         if (data->proc_dir) {
             proc_remove(data->proc_dir);
-            dev_info(&pdev->dev, "Removed /proc/%s\n", PROC_DIR_NAME);
+            dev_info(dev, "Removed /proc/%s\n", PROC_DIR_NAME);
         }
     }
     
-    dev_info(&pdev->dev, "Driver removed (IRQ was never registered)\n");
+    // 移除 sysfs 属性
+    sysfs_remove_group(&dev->kobj, &dev_attr_group);
+    
+    dev_info(dev, "Driver removed (IRQ was never registered)\n");
     return 0;
 }
 
@@ -174,5 +250,5 @@ module_platform_driver(my_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Your Name");
-MODULE_DESCRIPTION("DT driver for i.MX6ULL (IRQ registration disabled)");
-MODULE_VERSION("1.4");
+MODULE_DESCRIPTION("DT driver for i.MX6ULL with proc and sysfs interfaces");
+MODULE_VERSION("1.5");
