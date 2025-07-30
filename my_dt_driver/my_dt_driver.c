@@ -2,24 +2,92 @@
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/of.h>
-#include <linux/io.h>       // 添加资源地址处理头文件
-#include <linux/stdlib.h>   // 添加system()函数声明
+#include <linux/io.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/version.h>
 
 #define DRV_NAME "my_dt_driver"
-#define EXPECTED_IRQ 66     // 严格匹配设备树配置
+#define EXPECTED_IRQ 66
+#define PROC_DIR_NAME "my_driver"
+#define PROC_FILE_NAME "registers"
 
 struct my_device_data {
     struct device *dev;
     int irq;
     void __iomem *regs;
+    struct resource *mem_res;
+    struct proc_dir_entry *proc_dir;
 };
 
-static irqreturn_t my_irq_handler(int irq, void *dev_id)
+static int proc_registers_show(struct seq_file *m, void *v)
 {
-    struct my_device_data *data = dev_id;
-    dev_info(data->dev, "IRQ %d handled (regs@%pa)\n", 
-             irq, &data->regs);
-    return IRQ_HANDLED;
+    struct my_device_data *data = m->private;
+    
+    if (!data) {
+        seq_puts(m, "Error: No device data available\n");
+        return 0;
+    }
+    
+    // 显示设备信息
+    seq_printf(m, "Driver: %s\n", DRV_NAME);
+    seq_printf(m, "Device: %s\n", dev_name(data->dev));
+    
+    // 显示寄存器信息
+    if (data->mem_res) {
+        seq_printf(m, "\nMemory Resources:\n");
+        seq_printf(m, "  Physical Address: 0x%08llx\n", 
+                   (unsigned long long)data->mem_res->start);
+        seq_printf(m, "  Size: %lld bytes\n", resource_size(data->mem_res));
+        seq_printf(m, "  Mapped Address: %pK\n", data->regs);
+    }
+    
+    // 显示中断信息
+    seq_printf(m, "\nInterrupt:\n");
+    seq_printf(m, "  IRQ: %d (Registration Disabled)\n", data->irq);
+    
+    return 0;
+}
+
+static int proc_registers_open(struct inode *inode, struct file *file)
+{
+    // 对于 Linux 4.9.x，使用 PDE_DATA 宏
+    return single_open(file, proc_registers_show, PDE_DATA(inode));
+}
+
+static const struct file_operations proc_registers_fops = {
+    .owner = THIS_MODULE,
+    .open = proc_registers_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+
+static int create_proc_entry(struct my_device_data *data)
+{
+    // 创建 /proc 目录
+    data->proc_dir = proc_mkdir(PROC_DIR_NAME, NULL);
+    if (!data->proc_dir) {
+        dev_err(data->dev, "Failed to create /proc/%s\n", PROC_DIR_NAME);
+        return -ENOMEM;
+    }
+    
+    // 创建 /proc 文件
+    struct proc_dir_entry *proc_file;
+    
+    // 使用 proc_create_data 并传递数据指针
+    proc_file = proc_create_data(PROC_FILE_NAME, 0444, data->proc_dir,
+                                 &proc_registers_fops, data);
+    if (!proc_file) {
+        proc_remove(data->proc_dir);
+        dev_err(data->dev, "Failed to create /proc/%s/%s\n", 
+                PROC_DIR_NAME, PROC_FILE_NAME);
+        return -ENOMEM;
+    }
+    
+    dev_info(data->dev, "Created /proc/%s/%s for debugging\n", 
+             PROC_DIR_NAME, PROC_FILE_NAME);
+    return 0;
 }
 
 static int my_probe(struct platform_device *pdev)
@@ -40,15 +108,12 @@ static int my_probe(struct platform_device *pdev)
         dev_err(dev, "No memory resource\n");
         return -ENXIO;
     }
+    data->mem_res = res;
     
     /* 3. 获取中断资源 */
     irq = platform_get_irq(pdev, 0);
-    if (irq != EXPECTED_IRQ) {
-        dev_err(dev, "IRQ mismatch! DT:%d Driver:%d\n",
-                EXPECTED_IRQ, irq);
-        return -EINVAL;
-    }
     data->irq = irq;
+    data->dev = dev;
     
     /* 4. 映射寄存器 */
     data->regs = devm_ioremap_resource(dev, res);
@@ -57,39 +122,37 @@ static int my_probe(struct platform_device *pdev)
         return PTR_ERR(data->regs);
     }
     
-    dev_info(dev, "Device probed at 0x%llx (IRQ %d)\n",
+    dev_info(dev, "Device probed at 0x%llx (IRQ %d - registration disabled)\n",
              (unsigned long long)res->start, irq);
     
-    /* 5. 注册中断 */
-    ret = devm_request_irq(dev, irq, my_irq_handler,
-                          IRQF_TRIGGER_HIGH,
-                          DRV_NAME, data);
+    /* 5. 创建 proc 接口 */
+    ret = create_proc_entry(data);
     if (ret) {
-        dev_err(dev, "IRQ %d register failed: %d\n", irq, ret);
-        
-        /* 改进的错误诊断 */
-        if (ret == -EINVAL) {
-            dev_err(dev, "Invalid parameters for IRQ %d\n", irq);
-        } else if (ret == -EBUSY) {
-            dev_err(dev, "IRQ %d conflict detected\n", irq);
-            pr_info("Current interrupt assignments:\n");
-            pr_info("================================\n");
-            /* 使用内核API替代system()调用 */
-            if (proc_create_single("interrupts", 0, NULL, show_interrupts) == NULL) {
-                pr_err("Cannot display interrupt info\n");
-            }
-        }
+        dev_err(dev, "Failed to create proc interface (%d)\n", ret);
         return ret;
     }
     
     platform_set_drvdata(pdev, data);
-    dev_info(dev, "Driver initialized successfully\n");
+    dev_info(dev, "Driver initialized successfully (without IRQ)\n");
+    dev_info(dev, "Access device info via /proc/%s/%s\n",
+             PROC_DIR_NAME, PROC_FILE_NAME);
+    
     return 0;
 }
 
 static int my_remove(struct platform_device *pdev)
 {
-    dev_info(&pdev->dev, "Driver removed\n");
+    struct my_device_data *data = platform_get_drvdata(pdev);
+    
+    if (data) {
+        // 移除 proc 文件
+        if (data->proc_dir) {
+            proc_remove(data->proc_dir);
+            dev_info(&pdev->dev, "Removed /proc/%s\n", PROC_DIR_NAME);
+        }
+    }
+    
+    dev_info(&pdev->dev, "Driver removed (IRQ was never registered)\n");
     return 0;
 }
 
@@ -111,4 +174,5 @@ module_platform_driver(my_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Your Name");
-MODULE_DESCRIPTION("Optimized DT driver for i.MX6ULL");
+MODULE_DESCRIPTION("DT driver for i.MX6ULL (IRQ registration disabled)");
+MODULE_VERSION("1.4");

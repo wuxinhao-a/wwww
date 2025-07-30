@@ -722,14 +722,6 @@ deps_/home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o := 
     $(wildcard include/config/of/overlay.h) \
   include/linux/property.h \
   include/linux/fwnode.h \
-  include/linux/irq.h \
-    $(wildcard include/config/generic/irq/ipi.h) \
-    $(wildcard include/config/irq/domain/hierarchy.h) \
-    $(wildcard include/config/generic/pending/irq.h) \
-    $(wildcard include/config/hardirqs/sw/resend.h) \
-    $(wildcard include/config/generic/irq/legacy/alloc/hwirq.h) \
-    $(wildcard include/config/generic/irq/legacy.h) \
-  include/linux/irqhandler.h \
   include/linux/io.h \
     $(wildcard include/config/have/arch/huge/vmap.h) \
     $(wildcard include/config/has/ioport/map.h) \
@@ -750,12 +742,8 @@ deps_/home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o := 
     $(wildcard include/config/generic/iomap.h) \
     $(wildcard include/config/virt/to/bus.h) \
   include/linux/vmalloc.h \
-  arch/arm/include/generated/asm/irq_regs.h \
-  include/asm-generic/irq_regs.h \
-  include/linux/irqdesc.h \
-    $(wildcard include/config/irq/preflow/fasteoi.h) \
-    $(wildcard include/config/handle/domain/irq.h) \
-  arch/arm/include/asm/hw_irq.h \
+  include/linux/proc_fs.h \
+  include/generated/uapi/linux/version.h \
 
 /home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o: $(deps_/home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o)
 
