@@ -744,6 +744,9 @@ deps_/home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o := 
   include/linux/vmalloc.h \
   include/linux/proc_fs.h \
   include/generated/uapi/linux/version.h \
+  include/linux/input.h \
+  include/uapi/linux/input.h \
+  include/uapi/linux/input-event-codes.h \
 
 /home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o: $(deps_/home/book/100ask_imx6ull-qemu/linux-4.9.88/my_dt_driver/my_dt_driver.o)
 

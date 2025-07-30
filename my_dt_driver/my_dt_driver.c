@@ -8,6 +8,9 @@
 #include <linux/version.h>
 #include <linux/sysfs.h>
 #include <linux/device.h>
+#include <linux/input.h>
+#include <linux/jiffies.h>
+#include <linux/timer.h>
 
 #define DRV_NAME "my_dt_driver"
 #define EXPECTED_IRQ 66
@@ -20,6 +23,8 @@ struct my_device_data {
     void __iomem *regs;
     struct resource *mem_res;
     struct proc_dir_entry *proc_dir;
+    struct input_dev *input_dev;   // Input 设备
+    struct timer_list input_timer; // 模拟输入事件的定时器
 };
 
 // 先声明 sysfs_status_show 函数
@@ -40,6 +45,19 @@ static struct attribute *dev_attrs[] = {
 static const struct attribute_group dev_attr_group = {
     .attrs = dev_attrs,
 };
+
+// Input 定时器回调函数（旧版内核签名）
+static void input_timer_callback(unsigned long arg)
+{
+    struct my_device_data *data = (struct my_device_data *)arg;
+    
+    // 模拟按键按下事件
+    input_report_key(data->input_dev, BTN_0, 1);
+    input_sync(data->input_dev);
+    
+    // 模拟按键释放事件（50ms后）
+    mod_timer(&data->input_timer, jiffies + msecs_to_jiffies(50));
+}
 
 // SysFS 属性显示函数实现
 static ssize_t sysfs_status_show(struct device *dev, 
@@ -79,6 +97,19 @@ static ssize_t sysfs_status_show(struct device *dev,
     count += snprintf(buf + count, PAGE_SIZE - count, 
                      "  IRQ: %d (Registration Disabled)\n", data->irq);
     
+    // 显示输入设备状态
+    count += snprintf(buf + count, PAGE_SIZE - count, 
+                     "\nInput Device:\n");
+    if (data->input_dev) {
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "  Name: %s\n", data->input_dev->name);
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "  Phys: %s\n", data->input_dev->phys);
+    } else {
+        count += snprintf(buf + count, PAGE_SIZE - count, 
+                         "  Not initialized\n");
+    }
+    
     return count;
 }
 
@@ -107,6 +138,15 @@ static int proc_registers_show(struct seq_file *m, void *v)
     // 显示中断信息
     seq_printf(m, "\nInterrupt:\n");
     seq_printf(m, "  IRQ: %d (Registration Disabled)\n", data->irq);
+    
+    // 显示输入设备状态
+    seq_printf(m, "\nInput Device:\n");
+    if (data->input_dev) {
+        seq_printf(m, "  Name: %s\n", data->input_dev->name);
+        seq_printf(m, "  Phys: %s\n", data->input_dev->phys);
+    } else {
+        seq_printf(m, "  Not initialized\n");
+    }
     
     return 0;
 }
@@ -148,6 +188,48 @@ static int create_proc_entry(struct my_device_data *data)
     
     dev_info(data->dev, "Created /proc/%s/%s for debugging\n", 
              PROC_DIR_NAME, PROC_FILE_NAME);
+    return 0;
+}
+
+static int init_input_device(struct my_device_data *data)
+{
+    struct input_dev *input;
+    int error;
+    
+    // 分配输入设备
+    input = input_allocate_device();
+    if (!input) {
+        dev_err(data->dev, "Failed to allocate input device\n");
+        return -ENOMEM;
+    }
+    
+    // 设置输入设备属性
+    input->name = "My DT Input Device";
+    input->phys = "my_dt_driver/input0";
+    input->id.bustype = BUS_HOST;
+    input->id.vendor = 0x0001;
+    input->id.product = 0x0001;
+    input->id.version = 0x0100;
+    
+    // 设置支持的事件类型
+    __set_bit(EV_KEY, input->evbit);
+    __set_bit(BTN_0, input->keybit); // 自定义按键
+    
+    // 注册输入设备
+    error = input_register_device(input);
+    if (error) {
+        dev_err(data->dev, "Failed to register input device: %d\n", error);
+        input_free_device(input);
+        return error;
+    }
+    
+    data->input_dev = input;
+    dev_info(data->dev, "Input device registered: %s\n", input->name);
+    
+    // 初始化定时器（模拟输入事件）- 旧版内核方式
+    setup_timer(&data->input_timer, input_timer_callback, (unsigned long)data);
+    mod_timer(&data->input_timer, jiffies + msecs_to_jiffies(1000));
+    
     return 0;
 }
 
@@ -203,6 +285,18 @@ static int my_probe(struct platform_device *pdev)
         return ret;
     }
     
+    /* 7. 初始化 input 设备 */
+    ret = init_input_device(data);
+    if (ret) {
+        dev_err(dev, "Failed to initialize input device (%d)\n", ret);
+        // 清理已创建的资源
+        if (data->proc_dir) {
+            proc_remove(data->proc_dir);
+        }
+        sysfs_remove_group(&dev->kobj, &dev_attr_group);
+        return ret;
+    }
+    
     platform_set_drvdata(pdev, data);
     dev_info(dev, "Driver initialized successfully (without IRQ)\n");
     dev_info(dev, "Access device info via:\n");
@@ -222,6 +316,16 @@ static int my_remove(struct platform_device *pdev)
         if (data->proc_dir) {
             proc_remove(data->proc_dir);
             dev_info(dev, "Removed /proc/%s\n", PROC_DIR_NAME);
+        }
+        
+        // 移除 input 设备
+        if (data->input_dev) {
+            // 停止定时器
+            del_timer_sync(&data->input_timer);
+            
+            // 注销输入设备
+            input_unregister_device(data->input_dev);
+            dev_info(dev, "Unregistered input device\n");
         }
     }
     
@@ -250,5 +354,5 @@ module_platform_driver(my_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Your Name");
-MODULE_DESCRIPTION("DT driver for i.MX6ULL with proc and sysfs interfaces");
-MODULE_VERSION("1.5");
+MODULE_DESCRIPTION("DT driver for i.MX6ULL with proc, sysfs and input support");
+MODULE_VERSION("1.7");
